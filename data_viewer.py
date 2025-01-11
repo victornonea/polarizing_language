@@ -59,6 +59,9 @@ class Article:
         
         res = []
         for sentence, sent_mask in zip(re.split(newlines, self.text), re.split(newlines, label_mask)):
+            if not re.split(whitespaces, sentence):
+                continue
+            
             res.append({'words': [], 'labels': []})
             for word, word_mask in zip(re.split(whitespaces, sentence), re.split(whitespaces, sent_mask)):
                 res[-1]['words'].append(word)
