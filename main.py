@@ -7,13 +7,14 @@ import os
 import json
 from matplotlib import pyplot as plt
 import random as rn
+import numpy as np
 
 import data_viewer
 from util import tokenize_and_align_labels, compute_metrics
 
 # model_type: roberta
 # config_name: roberta-large
-# max_seq_length: 256
+# max_seq_length: 256 <- fixed pad size does not seem to serve any purpose and slows down computation, dynamic (default) padding per batch
 # per_gpu_train_batch_size: 8 (V)
 # per_gpu_eval_batch_size: 1
 # learning_rate: 2e-5 (V)
@@ -24,7 +25,6 @@ from util import tokenize_and_align_labels, compute_metrics
 
 task = "ner"
 ref_model_name = "roberta-base"
-# batch_size = 16
 checkpoint_dir = 'tmp_trainer'
 learning_rate = 2e-5
 warmup_steps = 500
@@ -52,13 +52,22 @@ def load_tokenizer(**kwargs):
     return tokenizer
 
 def load_and_preprocess_data(tokenizer):
+    global ds_train_art_ranges, ds_dev_art_ranges
+
     def load_in_trainable_form(dir_name):
         articles = data_viewer.load_article_set(dir_name)
         articles_trainable_form = [art.as_lightweight_trainable() for art in articles]
-        return [sent for art in articles_trainable_form for sent in art]
+        sents = []
+        sent_len = 0
+        art_ranges = []
+        for art in articles_trainable_form:
+            sents.extend(art)
+            art_ranges.append((sent_len, sent_len + len(art)))
+            sent_len = len(sents)
+        return sents, art_ranges
 
-    train_sentences = load_in_trainable_form('data/train')
-    dev_sentences = load_in_trainable_form('data/dev')
+    train_sentences, ds_train_art_ranges = load_in_trainable_form('data/train')
+    dev_sentences, ds_dev_art_ranges = load_in_trainable_form('data/dev')
 
     ds_train = Dataset.from_pandas(pd.DataFrame(data=train_sentences))
     ds_dev = Dataset.from_pandas(pd.DataFrame(data=dev_sentences))
@@ -183,14 +192,28 @@ def load_objects():
     trainer = get_trainer(model, num_train_epochs=num_train_epochs, save_steps=save_steps)
 
 def stats():
-    def ds_stats(ds):
+    def quick_stats(seq):
+        seq = list(seq)
+        return f'mean {np.mean(seq):.2f}, max {max(seq)}, std {np.std(seq):.2f}'
+
+    def ds_stats(ds, art_ranges=None):
         I_word_count = sum(label == 1 for sent in ds for label in sent['labels'])
         O_word_count = sum(label == 0 for sent in ds for label in sent['labels'])
         word_count = I_word_count + O_word_count
-        return f'{len(ds)} samples, {word_count} words, {100 * I_word_count / word_count:.2f}% inside words, {100 * O_word_count / word_count:.2f}% outside words'
+        
+        res = ''
+        if art_ranges:
+            res += f"{len(art_ranges)} articles, "
+        
+        res += f'{len(ds)} samples, {word_count} words, {100 * I_word_count / word_count:.2f}% inside words, {100 * O_word_count / word_count:.2f}% outside words'
+        res += f' | token stats per example: {quick_stats(len(sent["tokens"]) for sent in ds)}'
+        if art_ranges:
+            res += f' | example per article stats: {quick_stats(r[1] - r[0] for r in art_ranges)}'
+            res += f' | tokens per article stats: {quick_stats(sum(len(ds[i]["tokens"]) for i in range(*r)) for r in art_ranges)}'
+        return res
     
-    print('Train set stats:', ds_stats(ds_train))
-    print('Dev set stats:', ds_stats(ds_dev))
+    print('Train set stats:', ds_stats(ds_train, ds_train_art_ranges))
+    print('Dev set stats:', ds_stats(ds_dev, ds_dev_art_ranges))
 
 def predict_verbose(_set, index):
     sample = _set.select([index]).select_columns([c for c in _set.column_names if c != 'labels'])
