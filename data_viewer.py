@@ -97,3 +97,10 @@ def create_master_labels_tsv(file_name, _set):
         for article in _set:
             for label in article.labels:
                 writer.writerow([article.id, label.start, label.end])
+
+def create_master_articles_csv(file_name, _set):
+    with open(file_name, 'w', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file, delimiter=',')
+        writer.writerow(['id', 'text'])
+        for article in _set:
+            writer.writerow([article.id, article.text])
