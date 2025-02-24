@@ -1,3 +1,5 @@
+import evaluate
+import numpy as np
 
 # Credit: HuggingFace https://huggingface.co/docs/transformers/tasks/token_classification#preprocess
 def tokenize_and_align_labels(tokenizer):
@@ -32,7 +34,6 @@ def tokenize_and_align_labels(tokenizer):
         return tokenized_inputs
     return _tokenize_and_align_labels
 
-# Credit: HuggingFace https://huggingface.co/docs/transformers/tasks/token_classification#evaluate
 def compute_metrics(label_list, target_label):
     def _compute_metrics(p):
         predictions, labels = p
@@ -64,3 +65,39 @@ def compute_metrics(label_list, target_label):
             "accuracy": accuracy,
         }
     return _compute_metrics
+
+multi_label_metrics = evaluate.combine(["f1", "precision", "recall"])
+
+def sigmoid(x):
+   return 1/(1 + np.exp(-x))
+
+def compute_metrics_multi_label(p):
+    predictions, labels = p
+    predictions = sigmoid(predictions)
+    predictions = (predictions > 0.5).astype(int)
+    labels = labels.astype(int)
+    
+    predictions_any = predictions[:, 0]
+    labels_any = labels[:, 0]
+    
+    predictions_specific = predictions[:, 1:].reshape((-1,))
+    labels_specific = labels[:, 1:].reshape((-1,))
+    
+    def append_keys(prefix, _dict):
+        return {prefix + key: value for key, value in _dict.items()}
+    
+    return {**append_keys('any_', multi_label_metrics.compute(predictions_any, labels_any)),
+        **append_keys('specific_', multi_label_metrics.compute(predictions_specific, labels_specific))}
+
+def list_split(l, delim_vals):
+    res = []
+    new = True
+    for e in l:
+        if isinstance(e, str) and e in delim_vals:
+            new = True
+            continue
+        if new:
+            res.append([])
+            new = False
+        res[-1].append(e)
+    return res
