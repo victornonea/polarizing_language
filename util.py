@@ -1,5 +1,6 @@
 import evaluate
 import numpy as np
+from collections import deque
 
 # Credit: HuggingFace https://huggingface.co/docs/transformers/tasks/token_classification#preprocess
 def tokenize_and_align_labels(tokenizer):
@@ -101,3 +102,21 @@ def list_split(l, delim_vals):
             new = False
         res[-1].append(e)
     return res
+
+class WindowAverage:
+    def __init__(self, cap):
+        self.cap = cap
+        self.sum = 0
+        self.data = deque()
+    
+    def update(self, n):
+        self.sum += n
+        self.data.append(n)
+        if len(self.data) > self.cap:
+            self.sum -= self.data.popleft()
+    
+    @property
+    def val(self):
+        if not self.data:
+            return float('nan')
+        return self.sum / len(self.data)
