@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import os
 import regex as re
 import csv
+from collections import Counter
+import random as rn
 
 from util import list_split
 
@@ -28,6 +30,8 @@ patterns = ['Appeal_to_Authority',
     'Whataboutism']
 
 pattern_classmap = ClassLabel(num_classes=len(patterns) + 1, names=['Any_Pattern'] + patterns)
+
+keyword_classmap = ClassLabel(num_classes=5, names=['None', 'Violence', 'Commotion', 'Disparage', 'Legal'])
 
 @dataclass
 class Label:
@@ -68,6 +72,19 @@ class Article:
         
         accum.append(self.text[curr:-1])
         return ''.join(accum)
+
+    def get_line_highlight(self, label):
+        start, end, label_value = label
+        label_start = start
+        label_end = end
+        while start > 0 and self.text[start - 1] != '\n':
+            start -= 1
+        while end < len(self.text) - 1 and self.text[end + 1] != '\n':
+            end += 1
+        end += 1
+        return self.text[start:label_start] + '**' + \
+            self.text[label_start:label_end] + '**<-[' + \
+            label_value + ']' + self.text[label_end:end]
     
     def as_lightweight_trainable(self):
         # construct a trainable with sentence-wise samples, word-wise tokens and token-wise labels
@@ -121,21 +138,68 @@ class Article:
             res[-1]['labels'][0] = 1. if has_patterns else 0.
         
         return res
+    
+    def as_multi_label_trainable_from_regex_schema(self, schema):
+        newlines = r'[\n\r]'
+        res = []
+        for sentence in re.split(newlines, self.text):
+            if not sentence:
+                continue
+            
+            res.append({'text': sentence, 'labels': [1.] + [0. for _ in schema]})
+            
+            for i, topic in enumerate(schema):
+                if re.search(schema[topic], sentence):
+                    res[-1]['labels'][i + 1] = 1.
+                    res[-1]['labels'][0] = 0.
+        
+        return res
+
+
+class ArticleList(list):
+    def __init__(self):
+        self.label_map = {}
+        super().__init__()
+
+    def append(self, art):
+        for label in art.labels:
+            if label.value not in self.label_map:
+                self.label_map[label.value] = []
+            self.label_map[label.value].append((art, label))
+        super().append(art)
+    
+    @property
+    def label_categories(self):
+        return list(self.label_map.keys())
+    
+    def get_label_examples(self, category, n=10):
+        if n < 1:
+            sample = self.label_map[category]
+        else:
+            sample = rn.sample(self.label_map[category], n)
+        for art, label in sample:
+            print(art.get_line_highlight(label), '\n')
 
 
 def load_article_ids(path='.'):
-    return set([match.group(1) for file_name in os.listdir(path=path) if (match := re.search(r'article(\d+)\.txt', file_name))])
+    return sorted([match.group(1) for file_name in os.listdir(path=path) if (match := re.search(r'article(\d+)\.txt', file_name))])
 
 
-def load_article_set(path='.'):
+def load_article_set(path='.', labels_path=None):
+    if labels_path is None:
+        labels_path = path
+
     ids = load_article_ids(path=path)
-    res = []
+    res = ArticleList()
     for id in ids:
         with open(os.path.join(path, f'article{id}.txt'), 'r', encoding="utf-8") as f:
             text = f.read()
         
         labels = []
-        with open(os.path.join(path, f'article{id}.labels.tsv'), 'r') as f:
+        labels_file_name = f'article{id}.labels.tsv'
+        if labels_file_name not in os.listdir(labels_path):
+            continue
+        with open(os.path.join(labels_path, labels_file_name), 'r') as f:
             reader = csv.reader(f, delimiter='\t')
             for row in reader:
                 labels.append(Label(row[2], row[3], row[1]))

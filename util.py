@@ -1,6 +1,7 @@
 import evaluate
 import numpy as np
 from collections import deque
+import random as rn
 
 # Credit: HuggingFace https://huggingface.co/docs/transformers/tasks/token_classification#preprocess
 def tokenize_and_align_labels(tokenizer):
@@ -59,12 +60,20 @@ def compute_metrics(label_list, target_label):
         f1 = 2 * precision * recall / (precision + recall)
         accuracy = sum(counts[(p, l)] for p, l in counts.keys() if p == l) / sum(counts.values())
         
-        return {
+        results = {
             "precision": precision,
             "recall": recall,
             "f1": f1,
             "accuracy": accuracy,
         }
+        
+        if len(label_list) == 2:
+            other_label = next(l for l in label_list if l != target_label)
+            MCC = (counts[target_label, target_label] * counts[other_label, other_label] - counts[target_label, other_label] * counts[other_label, target_label]) / \
+                (sum(counts[target_label, _] for _ in label_list) * sum(counts[other_label, _] for _ in label_list) * sum(counts[_, other_label] for _ in label_list) * sum(counts[_, target_label] for _ in label_list)) ** (1/2)
+            results['MCC'] = MCC
+        
+        return results
     return _compute_metrics
 
 multi_label_metrics = evaluate.combine(["f1", "precision", "recall"])
@@ -120,3 +129,64 @@ class WindowAverage:
         if not self.data:
             return float('nan')
         return self.sum / len(self.data)
+
+def create_regex_schema_from_keywords(kw_dict):
+    schema_dict = {}
+    for topic in kw_dict:
+        schema_dict[topic] = '|'.join(r'(\b' + keyword + r'\b)' for keyword in kw_dict[topic])
+    return schema_dict
+
+class QuickPopList(list):
+    def pop(self, index):
+        if index < 0 or index >= len(self):
+            raise IndexError("Index out of range")
+        
+        target_value = self[index]
+        
+        last_value = self[-1]
+        self[index] = last_value
+        super().pop()
+        
+        return target_value
+
+def multi_label_set_balanced_resample(_set, seed=0):
+    # we are interested in creating a set with equal amounts of positive samples for each class
+    fixed_rn = rn.Random(seed)
+    ids_to_labels = {id: _set[id]['labels'] for id in range(len(_set))}
+    num_classes = len(_set[0]['labels'])    # any label
+    reps = [QuickPopList() for _ in range(num_classes)]
+    for sent_id, labels in ids_to_labels.items():
+        for i, l in enumerate(labels):
+            if l:
+                reps[i].append(sent_id)
+    
+    target_sample_size_per_class = min(len(l) for l in reps)
+    counts_to_go = [target_sample_size_per_class for _ in range(num_classes)]
+    res_ids = set()
+    while any(count > 0 for count in counts_to_go):
+        i = 0
+        while counts_to_go[i] <= 0:
+            i += 1
+        
+        pick_id = reps[i].pop(fixed_rn.randrange(len(reps[i])))
+        while pick_id in res_ids:
+            pick_id = reps[i].pop(fixed_rn.randrange(len(reps[i])))
+        
+        res_ids.add(pick_id)
+        for i, l in enumerate(ids_to_labels[pick_id]):
+            if l:
+                counts_to_go[i] -= 1
+    
+    return [_set[id] for id in res_ids]
+
+def topics_as_latex_table(mapping):
+    rows = [['' for _ in range(len(mapping))] for _ in range(max(len(v) for v in mapping.values()) + 1)]
+    rows[0] = list(mapping.keys())
+    for i, key in enumerate(mapping.keys()):
+        for j, value in enumerate(mapping[key]):
+            rows[j + 1][i] = value
+    
+    lines = []
+    for row in rows:
+        lines.append('\t' + ' & '.join(row) + r' \\');
+    return '\n'.join(lines)
