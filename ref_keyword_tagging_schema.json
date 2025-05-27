@@ -1,0 +1,6 @@
+{
+    "violence": ["murder", "kill", "rape", "rapist", "terrorist", "massacre", "shoot"],
+    "commotion": ["run", "yell", "shout", "cry", "rush", "struggle", "noise", "shove"],
+    "disparage": ["outrage", "disgrace", "shameful", "pathetic", "crazy"],
+    "legal": ["crime", "indictment", "legal", "illegal", "jury", "prosecution", "felony", "justice"]
+}
