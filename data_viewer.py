@@ -73,7 +73,7 @@ class Article:
         accum.append(self.text[curr:-1])
         return ''.join(accum)
 
-    def get_line_highlight(self, label):
+    def get_line_highlight(self, label, include_art_id=False):
         start, end, label_value = label
         label_start = start
         label_end = end
@@ -82,9 +82,14 @@ class Article:
         while end < len(self.text) - 1 and self.text[end + 1] != '\n':
             end += 1
         end += 1
-        return self.text[start:label_start] + '**' + \
+        res = self.text[start:label_start] + '**' + \
             self.text[label_start:label_end] + '**<-[' + \
             label_value + ']' + self.text[label_end:end]
+        
+        if include_art_id:
+            res = f'Art. {self.id}: ' + res
+        
+        return res
     
     def as_lightweight_trainable(self):
         # construct a trainable with sentence-wise samples, word-wise tokens and token-wise labels
@@ -176,9 +181,10 @@ class ArticleList(list):
         if n < 1:
             sample = self.label_map[category]
         else:
+            n = min(n, len(self.label_map[category]))
             sample = rn.sample(self.label_map[category], n)
         for art, label in sample:
-            print(art.get_line_highlight(label), '\n')
+            print(art.get_line_highlight(label, include_art_id=True), '\n')
 
 
 def load_article_ids(path='.'):
