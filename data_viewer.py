@@ -7,6 +7,7 @@ import regex as re
 import csv
 from collections import Counter
 import random as rn
+import numpy as np
 
 from util import list_split
 
@@ -42,6 +43,9 @@ class Label:
     
     def __iter__(self):
         return iter((self.start, self.end, self.value))
+    
+    def __repr__(self): 
+        return str((self.start, self.end, self.value))
 
 @dataclass
 class Article:
@@ -73,15 +77,34 @@ class Article:
         accum.append(self.text[curr:-1])
         return ''.join(accum)
 
-    def get_line_highlight(self, label, include_art_id=False):
-        start, end, label_value = label
-        label_start = start
-        label_end = end
+    def get_all_line_ranges(self, start=0, end=None):
+        if end is None:
+            end = len(self.text)
+        last = start
+        res = []
+        for i in range(start, end):
+            if self.text[i] == '\n':
+                if re.search(r'\w', self.text[last:i]):
+                    res.append((last, i))
+                last = i + 1
+        if i > last:
+            res.append((last, i))
+        return res
+
+    def get_line(self, label):
+        start, end, _ = label
         while start > 0 and self.text[start - 1] != '\n':
             start -= 1
-        while end < len(self.text) - 1 and self.text[end + 1] != '\n':
+        while end < len(self.text) and self.text[end] != '\n':
             end += 1
-        end += 1
+        
+        return start, end
+
+    def get_line_highlight(self, label, include_art_id=False):
+        label_start, label_end, label_value = label
+        
+        start, end = self.get_line(label)
+        
         res = self.text[start:label_start] + '**' + \
             self.text[label_start:label_end] + '**<-[' + \
             label_value + ']' + self.text[label_end:end]
@@ -90,6 +113,11 @@ class Article:
             res = f'Art. {self.id}: ' + res
         
         return res
+    
+    def split_label_across_lines(self, label):
+        ranges = self.get_all_line_ranges(label.start, label.end)
+        for s, e in ranges:
+            yield Label(s, e, label.value)
     
     def as_lightweight_trainable(self):
         # construct a trainable with sentence-wise samples, word-wise tokens and token-wise labels
