@@ -14,6 +14,6 @@ It's Demolition Man in real life pitting refugee war criminals and terrorists ag
 Four people were shot dead in the first week of this year.""".split('\n')
 
 if __name__ == '__main__':
-    load_objects(model_option=936, checkpoint_dir_overwrite=None)
+    load_objects(model_option='last', checkpoint_dir_overwrite=None)
     for example in examples:
         interactive_predict(example)

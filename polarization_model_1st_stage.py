@@ -23,10 +23,14 @@ import util as ut
 ref_model_name = "roberta-base"
 checkpoint_dir = 'checkpt-polarization'
 learning_rate = 3e-6
+lr_decay_per_epoch = 0.8
 batch_size = 4    # assume single gpu
 num_train_epochs = 20
 save_epochs = 4
 eval_epochs = 4
+
+default_pos_weight = 1.
+default_neg_weight = 2.  # we apply a negative weight amplifier to encourange the model to guess low when it does not know
 
 global_step = 0
 
@@ -47,12 +51,13 @@ all_patterns = {    # some of these are ignored
 }
 
 agg_patterns = {
-    'Loaded_Language': 0,
     'Heavy_Language': 0,
-    'Emotional_Language': 0,
-    'Amplifier/Minimizer': 1,
-    'Hyperbole/Oversimplification': 2,
-    'Provocative_Unsubstatiated_Claim': 2,
+    'Loaded_Language': 1,
+    'Emotional_Language': 1,
+    'Amplifier/Minimizer': 2,
+    'Hyperbole/Oversimplification': 3,
+    'Provocative_Unsubstatiated_Claim': 3,
+    'Inappropriately_Informal_Tone/Irony': 3,
 }
 
 num_labels = max(agg_patterns.values()) + 1
@@ -123,6 +128,11 @@ def load_objects(model_option='last', checkpoint_dir_overwrite=None):
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer, padding=True)
     model, checkpoint_name = load_model(model_option)
     optimizer = AdamW(model.parameters(), lr=learning_rate)
+    if checkpoint_name != ref_model_name:
+        optimizer.load_state_dict(torch.load(os.path.join(checkpoint_name, 'optimizer.pt')))
+    last_epoch_completed = global_step // epoch_steps - 1
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, lr_decay_per_epoch, last_epoch_completed)
+    
 
 def load_tokenizer():
     tokenizer = AutoTokenizer.from_pretrained(ref_model_name, add_prefix_space=True)
@@ -138,6 +148,7 @@ def load_and_preprocess_data():
     patterns = {}   # tuple(art, sent_range): [label]
     all_pos_sents = set()      # tuple(art, sent_range)
     all_null_sents = set()     # tuple(art, sent_range)
+    agg_pattern_counts = {key: 0 for key in agg_patterns.values()}
     for art in tr.values():
         null_sents = set(art.get_all_line_ranges())
         pos_sents = set()
@@ -152,6 +163,7 @@ def load_and_preprocess_data():
                 if (art.id, sent) not in patterns:
                     patterns[(art.id, sent)] = []
                 patterns[(art.id, sent)].append(label)
+                agg_pattern_counts[agg_patterns[label.value]] += 1
                 
                 if sent in null_sents:
                     null_sents.remove(sent)
@@ -172,9 +184,11 @@ def load_and_preprocess_data():
     print('all_pos_sents', len(all_pos_sents))
     print('all_null_sents', len(all_null_sents))
     print('all active patterns', sum(len(l) for l in patterns.values()))
+    
+    null_count = len(all_pos_sents) + len(all_null_sents)   # we assume all sentences contain null labels, then subtract respective positive counts
 
-    ds_pos = parse_sentences(all_pos_sents, patterns, tr)
-    ds_neg = parse_sentences(all_null_sents, patterns, tr)
+    ds_pos = parse_sentences(all_pos_sents, patterns, agg_pattern_counts, null_count, tr)
+    ds_neg = parse_sentences(all_null_sents, patterns, agg_pattern_counts, null_count, tr)
 
     rn.shuffle(ds_pos)
     rn.shuffle(ds_neg)
@@ -184,8 +198,10 @@ def load_and_preprocess_data():
     
     return ds_train, ds_dev
 
-def parse_sentences(all_sents, patterns, tr):
+def parse_sentences(all_sents, patterns, agg_pattern_counts, null_count, tr):
     ds = []
+    
+    neg_counter_weight = {key: agg_pattern_counts[key] / (null_count - agg_pattern_counts[key]) for key in agg_pattern_counts}
 
     for art_id, sent_range in all_sents:
         art = tr[art_id]
@@ -207,13 +223,13 @@ def parse_sentences(all_sents, patterns, tr):
                     labels[i][agg_patterns[raw_label.value]] = 1.0
         
         num_pos_token_labels = sum(sum(tl) for tl in labels[1:])
-        pos_token_weight = 1 / num_pos_token_labels if num_pos_token_labels else 0.
+        pos_token_weight = default_pos_weight / num_pos_token_labels if num_pos_token_labels else 0.
         
         num_neg_token_labels = sum(sum(l == 0. for l in tl) for tl in labels[1:])
         neg_token_weight = 1 / num_neg_token_labels if num_neg_token_labels else 0.
         
-        payload['loss_pos_weights'] = [[*[0. for _ in range(num_labels)], *[1. for _ in range(num_labels)]], *[[*[pos_token_weight for _ in range(num_labels)], *[0. for _ in range(num_labels)]] for _ in range(num_tokens - 1)]]
-        payload['loss_neg_weights'] = [[*[0. for _ in range(num_labels)], *[1. for _ in range(num_labels)]], *[[*[neg_token_weight for _ in range(num_labels)], *[0. for _ in range(num_labels)]] for _ in range(num_tokens - 1)]]
+        payload['loss_pos_weights'] = [[*[0. for _ in range(num_labels)], *[default_pos_weight for _ in range(num_labels)]], *[[*[pos_token_weight for _ in range(num_labels)], *[0. for _ in range(num_labels)]] for _ in range(num_tokens - 1)]]
+        payload['loss_neg_weights'] = [[*[0. for _ in range(num_labels)], *[default_neg_weight * neg_counter_weight[i] for i in range(num_labels)]], *[[*[default_neg_weight * neg_token_weight * neg_counter_weight[i] for i in range(num_labels)], *[0. for _ in range(num_labels)]] for _ in range(num_tokens - 1)]]
         
         ds.append(payload)
     return ds
@@ -335,6 +351,8 @@ def train():
         output_path = os.path.join(checkpoint_dir, "checkpoint-{}".format(global_step))
         # model_to_save = model.module if hasattr(model, "module") else model
         model.save_pretrained(output_path)
+        torch.save(optimizer.state_dict(), os.path.join(output_path, 'optimizer.pt'))
+        torch.save(scheduler.state_dict(), os.path.join(output_path, 'scheduler.pt'))
         print("Saving model checkpoint to %s", output_path)
     
     if not found_saved_model:
@@ -354,13 +372,14 @@ def train():
             avg_loss.update(float(loss))
 
             loss.backward()
-
-            # scheduler.step()  # Update learning rate schedule
             optimizer.step()
             model.zero_grad()
             
             global_step += 1
             iterator_bar.update()
+            
+            if global_step % epoch_steps == 0:
+                scheduler.step()
 
             if global_step % save_steps == 0:
                 save_model()
@@ -422,20 +441,26 @@ def evaluate(_set=None):
             class_logits[i].extend(logits[:, 1:, i].reshape(-1))    # token level
             class_labels[i].extend(batch['labels'].cpu().numpy()[:, 1:, i].reshape(-1))    # token level
     
+    class_id_to_str = lambda i: f'{i}-TOK' if i < num_labels else f'{i - num_labels}-SEQ'
+    
     return {
         'loss': loss / len(dataloader),
-        **{'CPP' + str(i): np.corrcoef(np.array([class_logits[i], class_labels[i]]))[0, 1] for i in range(arch_num_labels)}
+        **{'CPP' + class_id_to_str(i): np.corrcoef(np.array([class_logits[i], class_labels[i]]))[0, 1] for i in range(arch_num_labels)}
     }
 
 def interactive_predict(s):
     tokens = tokenizer(s, add_special_tokens=True)
     ins = make_batch([tokens])
     outs = model(**ins)[0].detach().cpu().numpy()[0]
+    
+    predictor_func = lambda x: ut.sigmoid(x)   # we may apply an additional square to enforce a more conservative signal estimate and increase confidence in positive signals
+    
     print('Input:')
     print(s)
     print('Prediction:')
-    print(json.dumps({str([key for key, val in agg_patterns.items() if val == i]): "{:.4f}".format(ut.sigmoid(outs[0][num_labels + i])) for i in range(num_labels)}, indent=4))
+    print(json.dumps({str([key for key, val in agg_patterns.items() if val == i]): "{:.4f}".format(predictor_func(outs[0][num_labels + i])) for i in range(num_labels)}, indent=4))
     print()
 
 if __name__ == '__main__':
+    load_objects()
     train()
