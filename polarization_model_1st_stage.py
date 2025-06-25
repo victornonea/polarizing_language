@@ -167,18 +167,16 @@ def load_and_preprocess_data():
                 if sent in null_sents:
                     null_sents.remove(sent)
                 pos_sents.add(sent)
-            
-        if len(null_sents) < len(pos_sents):
-            print(f'Warning: article {art.id} has fewer null sentences {len(null_sents)} than active sentences {len(pos_sents)}')
-            
-        sample_null_sents = list(null_sents)[:min(len(null_sents), len(pos_sents))]# rn.sample(list(null_sents), min(len(null_sents), len(pos_sents)))
+        
         wrap_art_id = lambda rs: [(art.id, r) for r in rs]
         
         all_pos_sents.update(wrap_art_id(pos_sents))
-        all_null_sents.update(wrap_art_id(sample_null_sents))
+        all_null_sents.update(wrap_art_id(null_sents))
 
     all_pos_sents = sorted(list(all_pos_sents))
     all_null_sents = sorted(list(all_null_sents))
+    
+    all_null_sents = rn.sample(all_null_sents, len(all_pos_sents))  # rebalance to a 1-1 pos-neg ratio
 
     print('all_pos_sents', len(all_pos_sents))
     print('all_null_sents', len(all_null_sents))
