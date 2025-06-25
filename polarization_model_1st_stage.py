@@ -116,7 +116,7 @@ class RobertaForMixedTokenClassification(RobertaForTokenClassification):
 
 
 def load_objects(model_option='last', checkpoint_dir_overwrite=None):
-    global tokenizer, ds_train, ds_dev, data_collator, model, checkpoint_name, optimizer, scheduler, metric, compute_metrics
+    global tokenizer, ds_train, ds_dev, model, checkpoint_name, optimizer, scheduler, metric, compute_metrics
     
     if checkpoint_dir_overwrite is not None:
         global checkpoint_dir
@@ -125,7 +125,6 @@ def load_objects(model_option='last', checkpoint_dir_overwrite=None):
     tokenizer = load_tokenizer()
     ds_train, ds_dev = load_and_preprocess_data()
     set_total_train_steps()
-    data_collator = DataCollatorWithPadding(tokenizer=tokenizer, padding=True)
     model, checkpoint_name = load_model(model_option)
     optimizer = AdamW(model.parameters(), lr=learning_rate)
     if checkpoint_name != ref_model_name:
@@ -448,8 +447,55 @@ def evaluate(_set=None):
         **{'CPP' + class_id_to_str(i): np.corrcoef(np.array([class_logits[i], class_labels[i]]))[0, 1] for i in range(arch_num_labels)}
     }
 
+def plot_checkpoint_performance(train=True, dev=True, targets=('CPP0-SEQ', 'CPP1-SEQ', 'CPP2-SEQ', 'CPP3-SEQ',), aliases=('Heavy language', 'Emotional / Loaded language', 'Amplifier / Minimizer', 'Hyperbole / Provocative / Irony')):
+    if aliases == None:
+        aliases = targets
+
+    ids = list(get_checkpoint_ids())
+    res = {}
+    res_file_name = 'eval_result.json'
+    if train:
+        res.update({'train_' + target: {} for target in targets})
+    if dev:
+        res.update({'dev_' + target: {} for target in targets})
+    
+    for id in ids:
+        checkpoint_name = get_checkpoint_name(id)
+        if not res_file_name in os.listdir(path=checkpoint_name):
+            continue
+        with open(os.path.join(checkpoint_name, res_file_name), 'r') as file:
+            checkpoint_res = json.load(file)
+        if train:
+            for target in targets:
+                res['train_' + target][id] = checkpoint_res['train'][target]
+        if dev:
+            for target in targets:
+                res['dev_' + target][id] = checkpoint_res['dev'][target]
+    
+    handles = []
+    for i, target in enumerate(targets):
+        if train:
+            target_res = res['train_' + target]
+            handles.append(plt.scatter(list(target_res.keys()), list(target_res.values()), color=f'C{i}', marker='x', label='Train ' + aliases[i]))
+        if dev:
+            target_res = res['dev_' + target]
+            handles.append(plt.scatter(list(target_res.keys()), list(target_res.values()), color=f'C{i}', label='Dev ' + aliases[i]))
+    plt.xlabel('Train steps')
+    plt.legend(handles=handles, loc='center left', bbox_to_anchor=(1, 0.5))
+    plt.tight_layout()
+    plt.show()
+
+def sentence_predict(s):
+    tokens = tokenizer(s, add_special_tokens=True, truncation=True)
+    ins = make_batch([tokens])
+    outs = model(**ins)[0].detach().cpu().numpy()[0]
+    
+    predictor_func = lambda x: ut.sigmoid(x)
+    
+    return {i: predictor_func(outs[0][num_labels + i]) for i in range(num_labels)}
+
 def interactive_predict(s):
-    tokens = tokenizer(s, add_special_tokens=True)
+    tokens = tokenizer(s, add_special_tokens=True, truncation=True)
     ins = make_batch([tokens])
     outs = model(**ins)[0].detach().cpu().numpy()[0]
     
@@ -464,3 +510,4 @@ def interactive_predict(s):
 if __name__ == '__main__':
     load_objects()
     train()
+    plot_checkpoint_performance()
