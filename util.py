@@ -190,3 +190,9 @@ def topics_as_latex_table(mapping):
     for row in rows:
         lines.append('\t' + ' & '.join(row) + r' \\');
     return '\n'.join(lines)
+
+def k_fold(data, fold_idx=0, k=5):
+    fold_size = len(data) // k
+    bounds = [i * fold_size for i in range(k)] + [len(data)]
+    folds = [data[bounds[i]:bounds[i+1]] for i in range(k)]
+    return sum([folds[i] for i in range(k) if i != fold_idx], []), folds[fold_idx]

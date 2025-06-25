@@ -29,6 +29,9 @@ num_train_epochs = 20
 save_epochs = 4
 eval_epochs = 4
 
+fold_idx = 0
+fold_k = 5
+
 default_pos_weight = 1.
 default_neg_weight = 2.  # we apply a negative weight amplifier to encourange the model to guess low when it does not know
 
@@ -190,8 +193,9 @@ def load_and_preprocess_data():
     rn.shuffle(ds_pos)
     rn.shuffle(ds_neg)
     
-    ds_train = ds_pos[:int(len(ds_pos) * 0.8)] + ds_neg[:int(len(ds_neg) * 0.8)]
-    ds_dev = ds_pos[int(len(ds_pos) * 0.8):] + ds_neg[int(len(ds_neg) * 0.8):]
+    ds_all = ds_pos + ds_neg
+    
+    ds_train, ds_dev = ut.k_fold(ds_all, fold_idx=fold_idx, k=fold_k)
     
     return ds_train, ds_dev
 
