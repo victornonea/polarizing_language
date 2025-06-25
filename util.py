@@ -196,3 +196,20 @@ def k_fold(data, fold_idx=0, k=5):
     bounds = [i * fold_size for i in range(k)] + [len(data)]
     folds = [data[bounds[i]:bounds[i+1]] for i in range(k)]
     return sum([folds[i] for i in range(k) if i != fold_idx], []), folds[fold_idx]
+
+def precision(pred, labels):
+    pred, labels = np.array(pred), np.array(labels)
+    n_pos_pred = np.sum(pred == 1.0)
+    n_true_pos = np.sum((pred == 1.0) & (labels == 1.0))
+    return n_true_pos / n_pos_pred
+
+def recall(pred, labels):
+    pred, labels = np.array(pred), np.array(labels)
+    n_pos_label = np.sum(labels == 1.0)
+    n_true_pos = np.sum((pred == 1.0) & (labels == 1.0))
+    return n_true_pos / n_pos_label
+
+def f1(pred, labels):
+    _precision = precision(pred, labels)
+    _recall = recall(pred, labels)
+    return 2 * _precision * _recall / (_precision + _recall)

@@ -29,6 +29,8 @@ num_train_epochs = 20
 save_epochs = 4
 eval_epochs = 4
 
+extended_evaluation_mode = False # precision and recall
+
 fold_idx = 0
 fold_k = 5
 
@@ -193,9 +195,14 @@ def load_and_preprocess_data():
     rn.shuffle(ds_pos)
     rn.shuffle(ds_neg)
     
-    ds_all = ds_pos + ds_neg
+    ds_train_pos, ds_dev_pos = ut.k_fold(ds_pos, fold_idx=fold_idx, k=fold_k)
+    ds_train_neg, ds_dev_neg = ut.k_fold(ds_neg, fold_idx=fold_idx, k=fold_k)
     
-    ds_train, ds_dev = ut.k_fold(ds_all, fold_idx=fold_idx, k=fold_k)
+    ds_train = ds_train_pos + ds_train_neg
+    ds_dev = ds_dev_pos + ds_dev_neg
+
+    rn.shuffle(ds_train)
+    rn.shuffle(ds_dev)
     
     return ds_train, ds_dev
 
@@ -426,7 +433,10 @@ def evaluate(_set=None):
     epoch_iterator = tqdm(dataloader(), desc="Iteration", position=0, leave=True)
     loss = 0
     class_logits = [[] for _ in range(arch_num_labels)]
+    class_binary_preds = [[] for _ in range(num_labels)]
     class_labels = [[] for _ in range(arch_num_labels)]
+    
+    binary_pred_thresh = 0.15
     
     for step, batch in enumerate(epoch_iterator):
         outputs = model(**batch)
@@ -435,18 +445,38 @@ def evaluate(_set=None):
         
         logits = torch.nn.Sigmoid()(outputs[1].detach().cpu()).numpy()
         
+        binary_preds = np.where(logits > binary_pred_thresh, 1. ,0.)
+        
         for i in range(num_labels):
             class_logits[num_labels + i].extend(logits[:, 0, num_labels + i].reshape(-1))   # sentence level
             class_labels[num_labels + i].extend(batch['labels'].cpu().numpy()[:, 0, num_labels + i].reshape(-1))   # sentence level
+            class_binary_preds[i].extend(binary_preds[:, 0, num_labels + i].reshape(-1))
             
             class_logits[i].extend(logits[:, 1:, i].reshape(-1))    # token level
             class_labels[i].extend(batch['labels'].cpu().numpy()[:, 1:, i].reshape(-1))    # token level
     
     class_id_to_str = lambda i: f'{i}-TOK' if i < num_labels else f'{i - num_labels}-SEQ'
     
+    CPP_res = {'CPP' + class_id_to_str(i): np.corrcoef(np.array([class_logits[i], class_labels[i]]))[0, 1] for i in range(arch_num_labels)}
+    
+    if not extended_evaluation_mode:
+        return {
+            'loss': loss / len(dataloader),
+            **CPP_res
+        }
+    
+    prec_res = {'Prec-' + class_id_to_str(i): ut.precision(class_binary_preds[i - num_labels], class_labels[i]) for i in range(num_labels, arch_num_labels)}
+    
+    recall_res = {'Recall-' + class_id_to_str(i): ut.recall(class_binary_preds[i - num_labels], class_labels[i]) for i in range(num_labels, arch_num_labels)}
+    
+    f1_res = {'F1-' + class_id_to_str(i): ut.f1(class_binary_preds[i - num_labels], class_labels[i]) for i in range(num_labels, arch_num_labels)}
+    
     return {
         'loss': loss / len(dataloader),
-        **{'CPP' + class_id_to_str(i): np.corrcoef(np.array([class_logits[i], class_labels[i]]))[0, 1] for i in range(arch_num_labels)}
+        **CPP_res,
+        **prec_res,
+        **recall_res,
+        **f1_res
     }
 
 def plot_checkpoint_performance(train=True, dev=True, targets=('CPP0-SEQ', 'CPP1-SEQ', 'CPP2-SEQ', 'CPP3-SEQ',), aliases=('Heavy language', 'Emotional / Loaded language', 'Amplifier / Minimizer', 'Hyperbole / Provocative / Irony')):
