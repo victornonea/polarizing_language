@@ -37,6 +37,13 @@ fold_k = 5
 default_pos_weight = 1.
 default_neg_weight = 2.  # we apply a negative weight amplifier to encourange the model to guess low when it does not know
 
+loss_weight_schema = 'no_token_weights'
+assert loss_weight_schema in {
+    'no_token_weights', 
+    'global_class_agnostic', 'global_class_balanced',
+    'local'
+}
+
 global_step = 0
 
 device = 'cuda'
@@ -188,9 +195,12 @@ def load_and_preprocess_data():
     print('all active patterns', sum(len(l) for l in patterns.values()))
     
     null_count = len(all_pos_sents) + len(all_null_sents)   # we assume all sentences contain null labels, then subtract respective positive counts
+    pos_sent_count = len(all_pos_sents)
 
-    ds_pos = parse_sentences(all_pos_sents, patterns, agg_pattern_counts, null_count, tr)
-    ds_neg = parse_sentences(all_null_sents, patterns, agg_pattern_counts, null_count, tr)
+    ds_pos, ds_neg, pos_token_count, neg_token_count = preparse_sentences((all_pos_sents, all_null_sents), patterns, agg_pattern_counts, tr)
+    
+    set_loss_weights(ds_pos, agg_pattern_counts, null_count, pos_sent_count, pos_token_count, neg_token_count)
+    set_loss_weights(ds_neg, agg_pattern_counts, null_count, pos_sent_count, pos_token_count, neg_token_count)
 
     rn.shuffle(ds_pos)
     rn.shuffle(ds_neg)
@@ -206,40 +216,70 @@ def load_and_preprocess_data():
     
     return ds_train, ds_dev
 
-def parse_sentences(all_sents, patterns, agg_pattern_counts, null_count, tr):
-    ds = []
-    
-    neg_counter_weight = {key: agg_pattern_counts[key] / (null_count - agg_pattern_counts[key]) for key in agg_pattern_counts}
+def preparse_sentences(all_sents, patterns, agg_pattern_counts, tr):
+    dss = []
+    pos_token_count = 0
+    neg_token_count = 0
 
-    for art_id, sent_range in all_sents:
-        art = tr[art_id]
-        payload = tokenizer(art.text[slice(*sent_range)], add_special_tokens=True, return_offsets_mapping=True)
-        
+    for subset in all_sents:
+        ds = []
+        dss.append(ds)
+        for art_id, sent_range in subset:
+            art = tr[art_id]
+            payload = tokenizer(art.text[slice(*sent_range)], add_special_tokens=True, return_offsets_mapping=True)
+            
+            num_tokens = len(payload['input_ids'])
+            
+            labels = [[0. for _ in range(arch_num_labels)] for _ in range(num_tokens)]
+            payload['labels'] = labels
+            
+            for raw_label in patterns.get((art_id, sent_range), []):
+                labels[0][num_labels + agg_patterns[raw_label.value]] = 1.0 # sentence level label
+                for i in range(num_tokens):
+                    token_offset = payload['offset_mapping'][i]
+                    if token_offset[1] - token_offset[0] == 0:
+                        continue # trivial token
+                    token_start_in_art = sent_range[0] + token_offset[0]
+                    if raw_label.start <= token_start_in_art < raw_label.end:
+                        labels[i][agg_patterns[raw_label.value]] = 1.0
+            
+            pos_token_count += sum(sum(tl) for tl in labels[1:])
+            neg_token_count += sum(sum(l == 0. for l in tl) for tl in labels[1:])
+            
+            ds.append(payload)
+    
+    return *dss, pos_token_count, neg_token_count
+
+
+def set_loss_weights(ds, agg_pattern_counts, null_count, pos_sent_count, pos_token_count, neg_token_count):
+    if loss_weight_schema in ('global_class_agnostic', 'no_token_weights'):
+        # all neg counterweights are equal
+        all_pos_pattern_counts = sum(agg_pattern_counts.values())
+        all_neg_pattern_counts = null_count * num_labels - all_pos_pattern_counts
+        neg_counterweight = {key: all_pos_pattern_counts / all_neg_pattern_counts for key in agg_pattern_counts}
+    else:
+        neg_counterweight = {key: agg_pattern_counts[key] / (null_count - agg_pattern_counts[key]) for key in agg_pattern_counts}
+    
+    for payload in ds:
+        labels = payload['labels']
         num_tokens = len(payload['input_ids'])
-        
-        labels = [[0. for _ in range(arch_num_labels)] for _ in range(num_tokens)]
-        payload['labels'] = labels
-        
-        for raw_label in patterns.get((art_id, sent_range), []):
-            labels[0][num_labels + agg_patterns[raw_label.value]] = 1.0 # sentence level label
-            for i in range(num_tokens):
-                token_offset = payload['offset_mapping'][i]
-                if token_offset[1] - token_offset[0] == 0:
-                    continue # trivial token
-                token_start_in_art = sent_range[0] + token_offset[0]
-                if raw_label.start <= token_start_in_art < raw_label.end:
-                    labels[i][agg_patterns[raw_label.value]] = 1.0
-        
-        num_pos_token_labels = sum(sum(tl) for tl in labels[1:])
-        pos_token_weight = default_pos_weight / num_pos_token_labels if num_pos_token_labels else 0.
-        
-        num_neg_token_labels = sum(sum(l == 0. for l in tl) for tl in labels[1:])
-        neg_token_weight = 1 / num_neg_token_labels if num_neg_token_labels else 0.
+    
+        if loss_weight_schema == 'no_token_weights':
+            pos_token_weight = 0.
+            neg_token_weight = 0.
+        elif loss_weight_schema == 'local':
+            num_pos_token_labels = sum(sum(tl) for tl in labels[1:])
+            pos_token_weight = default_pos_weight / num_pos_token_labels if num_pos_token_labels else 0.
+            
+            num_neg_token_labels = sum(sum(l == 0. for l in tl) for tl in labels[1:])
+            neg_token_weight = default_neg_weight / num_neg_token_labels if num_neg_token_labels else 0.
+        else:
+            pos_token_weight = default_pos_weight * pos_sent_count / pos_token_count
+            neg_token_weight = default_neg_weight * pos_sent_count / neg_token_count
         
         payload['loss_pos_weights'] = [[*[0. for _ in range(num_labels)], *[default_pos_weight for _ in range(num_labels)]], *[[*[pos_token_weight for _ in range(num_labels)], *[0. for _ in range(num_labels)]] for _ in range(num_tokens - 1)]]
-        payload['loss_neg_weights'] = [[*[0. for _ in range(num_labels)], *[default_neg_weight * neg_counter_weight[i] for i in range(num_labels)]], *[[*[default_neg_weight * neg_token_weight * neg_counter_weight[i] for i in range(num_labels)], *[0. for _ in range(num_labels)]] for _ in range(num_tokens - 1)]]
         
-        ds.append(payload)
+        payload['loss_neg_weights'] = [[*[0. for _ in range(num_labels)], *[default_neg_weight * neg_counterweight[i] for i in range(num_labels)]], *[[*[neg_token_weight * neg_counterweight[i] for i in range(num_labels)], *[0. for _ in range(num_labels)]] for _ in range(num_tokens - 1)]]
     return ds
 
 def set_total_train_steps():
@@ -353,7 +393,7 @@ def train():
             # print('train eval:', evaluate(ds_train))
             # print('eval:', evaluate())
         else:
-            eval_checkpoint(global_step, model)
+            eval_checkpoint(global_step, model, print_mode=('in_model' if save_epochs != -1 else 'loose'))
     
     def save_model():
         output_path = os.path.join(checkpoint_dir, "checkpoint-{}".format(global_step))
@@ -363,7 +403,7 @@ def train():
         torch.save(scheduler.state_dict(), os.path.join(output_path, 'scheduler.pt'))
         print("Saving model checkpoint to %s", output_path)
     
-    if not found_saved_model:
+    if not found_saved_model and save_epochs != -1:
         save_model()
     local_evaluate()
     
@@ -389,14 +429,15 @@ def train():
             if global_step % epoch_steps == 0:
                 scheduler.step()
 
-            if global_step % save_steps == 0:
+            if save_epochs != -1 and global_step % save_steps == 0:
                 save_model()
             
             if global_step % eval_steps == 0:
                 local_evaluate()
                     
     
-    save_model()
+    if save_epochs != -1:
+        save_model()
     local_evaluate()
 
 eval_file_name = 'eval_result.json'
@@ -407,10 +448,11 @@ def eval_checkpoints():
     for id in ids:
         eval_checkpoint(id)
 
-def eval_checkpoint(id, model=None):
+def eval_checkpoint(id, model=None, print_mode='in_model'):
+    assert print_mode in ('in_model', 'loose')
     checkpoint_name = get_checkpoint_name(id)
     print(checkpoint_name)
-    if eval_file_name in os.listdir(path=checkpoint_name):
+    if print_mode=='in_model' and eval_file_name in os.listdir(path=checkpoint_name):
         with open(os.path.join(checkpoint_name, eval_file_name), 'r') as file:
             checkpoint_res = json.load(file)
         # print('cached - ', checkpoint_res)
@@ -419,7 +461,11 @@ def eval_checkpoint(id, model=None):
             model, _ = load_model(id)
         checkpoint_res = {'train': evaluate(ds_train), 'dev': evaluate(ds_dev)}
         print(checkpoint_res)
-        with open(os.path.join(checkpoint_name, eval_file_name), 'w') as file:
+        if print_mode=='in_model':
+            with open(os.path.join(checkpoint_name, eval_file_name), 'w') as file:
+                json.dump(checkpoint_res, file)
+        elif print_mode == 'loose':
+            with open(os.path.join(checkpoint_dir, f'steps-{id}-{eval_file_name}'), 'w') as file:
                 json.dump(checkpoint_res, file)
 
 def evaluate(_set=None):
