@@ -21,12 +21,12 @@ import util as ut
 
 
 ref_model_name = "roberta-base"
-checkpoint_dir = 'checkpt-polarization'
+checkpoint_dir = 'checkpt'
 learning_rate = 3e-6
 lr_decay_per_epoch = 0.8
 batch_size = 4    # assume single gpu
 num_train_epochs = 20
-save_epochs = 4
+save_epochs = 4     # set to -1 to skip saving
 eval_epochs = 4
 
 extended_evaluation_mode = False # precision and recall
@@ -37,10 +37,11 @@ fold_k = 5
 default_pos_weight = 1.
 default_neg_weight = 2.  # we apply a negative weight amplifier to encourange the model to guess low when it does not know
 
-loss_weight_schema = 'no_token_weights'
+loss_weight_schema = 'local'
 assert loss_weight_schema in {
     'no_token_weights', 
-    'global_class_agnostic', 'global_class_balanced',
+    'global_class_agnostic',
+    'global_class_balanced',
     'local'
 }
 
@@ -381,7 +382,7 @@ def make_batch(rows):
     
     return {key: chain(key, value) for key, value in pad_map.items() if key in rows[0]}
 
-def train():
+def train(print_addendum=''):
     global global_step
     
     model.zero_grad()
@@ -393,7 +394,7 @@ def train():
             # print('train eval:', evaluate(ds_train))
             # print('eval:', evaluate())
         else:
-            eval_checkpoint(global_step, model, print_mode=('in_model' if save_epochs != -1 else 'loose'))
+            eval_checkpoint(global_step, model, print_mode=('in_model' if save_epochs != -1 else 'loose'), print_addendum=print_addendum)
     
     def save_model():
         output_path = os.path.join(checkpoint_dir, "checkpoint-{}".format(global_step))
@@ -448,7 +449,7 @@ def eval_checkpoints():
     for id in ids:
         eval_checkpoint(id)
 
-def eval_checkpoint(id, model=None, print_mode='in_model'):
+def eval_checkpoint(id, model=None, print_mode='in_model', print_addendum=''):
     assert print_mode in ('in_model', 'loose')
     checkpoint_name = get_checkpoint_name(id)
     print(checkpoint_name)
@@ -465,7 +466,7 @@ def eval_checkpoint(id, model=None, print_mode='in_model'):
             with open(os.path.join(checkpoint_name, eval_file_name), 'w') as file:
                 json.dump(checkpoint_res, file)
         elif print_mode == 'loose':
-            with open(os.path.join(checkpoint_dir, f'steps-{id}-{eval_file_name}'), 'w') as file:
+            with open(os.path.join(checkpoint_dir, f'{print_addendum}steps-{id}-{eval_file_name}'), 'w') as file:
                 json.dump(checkpoint_res, file)
 
 def evaluate(_set=None):
@@ -587,5 +588,5 @@ def interactive_predict(s):
 
 if __name__ == '__main__':
     load_objects()
-    train()
-    plot_checkpoint_performance()
+    # train()
+    interactive_predict('I got hit by a car today.')

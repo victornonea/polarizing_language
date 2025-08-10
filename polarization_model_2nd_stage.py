@@ -1,12 +1,14 @@
 import csv
 import spacy
 import numpy as np
+import json
 
 nlp = spacy.load('en_core_web_sm')
 
 from polarization_model_1st_stage import load_objects, sentence_predict
 from data_viewer import load_article_set
 from demo_polarization_first_stage import example1, example2, example3
+import util as ut
 
 
 agg_patterns = {
@@ -119,31 +121,8 @@ def read_csv(file_name):
                 res[header[i]].append(e)
     return res
 
-tr = load_article_set('data/train', '../doccano/labels')
-tr = {art.id: art for art in tr}
-
-article_wise_answers = read_csv('article_answers-v1.csv')
-answers = {}
-
-for answer in article_wise_answers.rows():
-    if answer['article_id'] in tr and answer['question_id'] in considered_questions:
-        key = answer['article_id'], answer['question_id']
-        if key in answers:
-            print(f'Warning, question {key[1]} for article {key[0]} answered multiple times.')
-        answers[key] = int(answer['answer'])
-
-for art_id in tr:
-    for q_id in considered_questions:
-        if (art_id, q_id) in answers:
-            continue
-        if q_id in dependent_questions and ((art_id, dependent_questions[q_id]) not in answers or answers[art_id, dependent_questions[q_id]] < 3):
-            continue
-        print(f'Warning, question {key[1]} for article {key[0]} missing expected answer.')
-
 def sent_split(s):
     return [sent.text for sent in nlp(s).sents]
-
-load_objects()
 
 def signal_to_prob(x):
     return 0. if x < low_signal_threshold else max_confidence * (x - low_signal_threshold) / (1 - low_signal_threshold)
@@ -177,12 +156,39 @@ def predict(text):
     return {q: rule_map[q].eval(realization) for q in rule_map}
 
 def evaluate_train_set():
+    tr = load_article_set('data/train', '../doccano/labels')
+    tr = {art.id: art for art in tr}
+    
+    with open('../doccano/visited.json', 'r') as file:
+        visited = json.load(file)
+        tr_validated = {art_id for art_id in visited if visited[art_id] == 'ok'}
+
+    answers = {}
+
+    for answer in article_wise_answers.rows():
+        if answer['article_id'] not in tr_validated:
+            continue
+        if answer['article_id'] in tr and answer['question_id'] in considered_questions:
+            key = answer['article_id'], answer['question_id']
+            if key in answers:
+                print(f'Warning, question {key[1]} for article {key[0]} answered multiple times.')
+            answers[key] = int(answer['answer'])
+
+    for art_id in tr_validated:
+        for q_id in considered_questions:
+            if (art_id, q_id) in answers:
+                continue
+            if q_id in dependent_questions and ((art_id, dependent_questions[q_id]) not in answers or answers[art_id, dependent_questions[q_id]] < 3):
+                continue
+            print(f'Warning, question {q_id} for article {art_id} missing expected answer.')
+
+
     q_traces_pred = {q_id: [] for q_id in considered_questions}
     q_traces_label = {q_id: [] for q_id in considered_questions}
     
     q_label_counts = {q_id: {i: 0 for i in range(1, 6)} for q_id in considered_questions}
     
-    for i, art_id in enumerate(tr):
+    for i, art_id in enumerate(tr_validated):
         print(i)
         art = tr[art_id]
         pred = predict(art.text)
@@ -193,15 +199,53 @@ def evaluate_train_set():
                 
                 q_label_counts[q_id][answers[art_id, q_id]] += 1
     
-    return {q_id: np.corrcoef(np.array([q_traces_pred[q_id], q_traces_label[q_id]]))[0, 1] for q_id in considered_questions}, q_label_counts
+    coef_payload = lambda q_id: np.array([q_traces_pred[q_id], q_traces_label[q_id]]).transpose()
+    corrcoef_wrapper = lambda ab: ut.corrcoef(ab[:, 0], ab[:, 1])
+    
+    return {q_id: (ut.corrcoef(q_traces_pred[q_id], q_traces_label[q_id]), len(q_traces_pred[q_id]), ut.bootstrap_confidence(corrcoef_wrapper, coef_payload(q_id))) for q_id in considered_questions}, q_label_counts
 
-res, counts = evaluate_train_set()
+def evaluate_test_set():
+    text_set = load_article_set('data/dev') + load_article_set('data/test')
+    text_set = {art.id: art for art in text_set}
+    
+    row_answers = read_csv('../experimental_analysis/Eval-FormAnswers_rows-v6.csv')
+    
+    eval_arts = set(row_answers['article_id'])
+    
+    answer_map = {}
+    for answer in row_answers.rows():
+        key = answer['article_id'], answer['question_id']
+        if key not in answer_map:
+            answer_map[key] = []
+        answer_map[key].append(int(answer['answer']))
 
-# print(predict(example1))
-print(res)
-print()
-print(counts)
 
-# {'Q2': 0.46321652660216023, 'Q15': -0.03334622815069757, 'Q10': 0.2033902365363096, 'Q14': 0.514186668677716, 'Q1': 0.4843448546445513, 'Q4': 0.18538972357395567, 'Q3': -0.18290211761180264, 'Q7': 0.44496790621705273}
+    for key in answer_map:
+        answer_map[key] = np.mean(answer_map[key])
 
-# {'Q2': {1: 14, 2: 3, 3: 8, 4: 8, 5: 14}, 'Q15': {1: 41, 2: 8, 3: 7, 4: 2, 5: 1}, 'Q10': {1: 42, 2: 5, 3: 3, 4: 4, 5: 5}, 'Q14': {1: 17, 2: 5, 3: 10, 4: 5, 5: 22}, 'Q1': {1: 6, 2: 6, 3: 13, 4: 16, 5: 18}, 'Q4': {1: 27, 2: 10, 3: 6, 4: 6, 5: 10}, 'Q3': {1: 34, 2: 7, 3: 2, 4: 1, 5: 3}, 'Q7': {1: 23, 2: 13, 3: 7, 4: 12, 5: 4}}
+    q_traces_pred = {q_id: [] for q_id in considered_questions}
+    q_traces_label = {q_id: [] for q_id in considered_questions}
+    
+    for i, art_id in enumerate(eval_arts):
+        print(i)
+        art = text_set[art_id]
+        pred = predict(art.text)
+        for q_id in considered_questions:
+            if (art_id, q_id) in answer_map:
+                q_traces_pred[q_id].append(pred[q_id])
+                q_traces_label[q_id].append(answer_map[art_id, q_id])
+    
+    coef_payload = lambda q_id: np.array([q_traces_pred[q_id], q_traces_label[q_id]]).transpose()
+    corrcoef_wrapper = lambda ab: ut.corrcoef(ab[:, 0], ab[:, 1])
+    
+    return {q_id: (ut.corrcoef(q_traces_pred[q_id], q_traces_label[q_id]), len(q_traces_pred[q_id]), ut.bootstrap_confidence(corrcoef_wrapper, coef_payload(q_id))) for q_id in considered_questions}
+
+
+if __name__ == '__main__':
+    article_wise_answers = read_csv('../experimental_analysis/FormAnswers_rows-v6.csv')
+    load_objects()
+    # res, counts = evaluate_train_set()
+    # res = evaluate_test_set()
+    # print(res)
+
+    print(predict(example1))

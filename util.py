@@ -2,6 +2,7 @@ import evaluate
 import numpy as np
 from collections import deque
 import random as rn
+import math
 
 # Credit: HuggingFace https://huggingface.co/docs/transformers/tasks/token_classification#preprocess
 def tokenize_and_align_labels(tokenizer):
@@ -213,3 +214,23 @@ def f1(pred, labels):
     _precision = precision(pred, labels)
     _recall = recall(pred, labels)
     return 2 * _precision * _recall / (_precision + _recall)
+
+def corrcoef(a, b):
+    return np.corrcoef(np.array([a, b]))[0, 1]
+
+def bootstrap_confidence(foo, orig_sample, conf=0.95, repetitions=10000, resample_size=None):
+    n = len(orig_sample)
+    if resample_size == None:
+        resample_size = n
+    
+    mean = foo(orig_sample)
+    vals = [foo(orig_sample[np.random.choice(n, size=resample_size)]) for _ in range(repetitions)]
+    
+    if any(math.isnan(val) for val in vals):
+        raise RuntimeError('Encountered nan in bootstrap operation')
+    
+    vals.sort()
+    
+    margin_elem_count = int((1 - conf) * repetitions / 2)
+    
+    return vals[margin_elem_count], vals[repetitions // 2], vals[-margin_elem_count - 1]
