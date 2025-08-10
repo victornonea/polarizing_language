@@ -25,7 +25,7 @@ from util import tokenize_and_align_labels, compute_metrics
 
 task = "ner"
 ref_model_name = "roberta-base"
-checkpoint_dir = 'tmp_trainer'
+checkpoint_dir = 'tmp_trainer-goodish'
 learning_rate = 2e-5
 warmup_steps = 500
 batch_size = 8    # assume single gpu
@@ -142,7 +142,10 @@ def eval_checkpoints():
             with open(os.path.join(checkpoint_name, res_file_name), 'w') as file:
                 json.dump(checkpoint_res, file)
 
-def plot_checkpoint_performance(train=True, dev=True, targets=('f1', 'precision', 'accuracy')):
+def plot_checkpoint_performance(train=True, dev=True, targets=('f1', 'precision', 'accuracy'), aliases=None):
+    if aliases == None:
+        aliases = targets
+
     ids = list(get_checkpoint_ids())
     res = {}
     res_file_name = 'eval_result.json'
@@ -168,11 +171,12 @@ def plot_checkpoint_performance(train=True, dev=True, targets=('f1', 'precision'
     for i, target in enumerate(targets):
         if train:
             target_res = res['train_' + target]
-            handles.append(plt.scatter(list(target_res.keys()), list(target_res.values()), color=f'C{i}', marker='x', label='train_' + target))
+            handles.append(plt.scatter(list(target_res.keys()), list(target_res.values()), color=f'C{i}', marker='x', label='Train ' + aliases[i]))
         if dev:
             target_res = res['dev_' + target]
-            handles.append(plt.scatter(list(target_res.keys()), list(target_res.values()), color=f'C{i}', label='dev_' + target))
-    plt.legend(handles=handles)
+            handles.append(plt.scatter(list(target_res.keys()), list(target_res.values()), color=f'C{i}', label='Dev ' + aliases[i]))
+    plt.xlabel('Train steps')
+    plt.legend(handles=handles, loc=(0.67, 0.5))
     plt.show()
 
 def set_total_train_steps():
@@ -186,7 +190,8 @@ def load_objects():
     data_collator = DataCollatorForTokenClassification(tokenizer)
     ds_train, ds_dev = load_and_preprocess_data(tokenizer)
     set_total_train_steps()
-    model_option = 'last'
+    if 'model_option' not in globals():
+        model_option = 'last'    
     model, checkpoint_name = load_model(model_option)
     compute_metrics = compute_metrics(classmap.names, target_label)
     trainer = get_trainer(model, num_train_epochs=num_train_epochs, save_steps=save_steps)
@@ -222,11 +227,15 @@ def predict_verbose(_set, index):
         print(t)
 
 if __name__ == '__main__':
+    model_option = 14000
+
     load_objects()
+    
+    print(trainer.evaluate(ds_dev))
     
     stats()
 
-    train()
-    eval_checkpoints()
+    # train()
+    # eval_checkpoints()
     
-    plot_checkpoint_performance(targets=('f1', 'precision', 'recall'))
+    # plot_checkpoint_performance(targets=('f1', 'precision', 'recall'), aliases=('F1', 'Precision', 'Recall'))
