@@ -128,7 +128,7 @@ class RobertaForMixedTokenClassification(RobertaForTokenClassification):
         return outputs  # (loss), scores, (hidden_states), (attentions)
 
 
-def load_objects(model_option='last', checkpoint_dir_overwrite=None):
+def load_objects(model_option='last', checkpoint_dir_overwrite=None, exclude_data=False):
     global tokenizer, ds_train, ds_dev, model, checkpoint_name, optimizer, scheduler, metric, compute_metrics
     
     if checkpoint_dir_overwrite is not None:
@@ -136,13 +136,16 @@ def load_objects(model_option='last', checkpoint_dir_overwrite=None):
         checkpoint_dir = checkpoint_dir_overwrite
     
     tokenizer = load_tokenizer()
-    ds_train, ds_dev = load_and_preprocess_data()
-    set_total_train_steps()
+    
+    if not exclude_data:
+        ds_train, ds_dev = load_and_preprocess_data()
+        set_total_train_steps()
+    
     model, checkpoint_name = load_model(model_option)
     optimizer = AdamW(model.parameters(), lr=learning_rate)
     if checkpoint_name != ref_model_name:
         optimizer.load_state_dict(torch.load(os.path.join(checkpoint_name, 'optimizer.pt')))
-    last_epoch_completed = global_step // epoch_steps - 1
+    last_epoch_completed = global_step // epoch_steps - 1 if not exclude_data else -1
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, lr_decay_per_epoch, last_epoch_completed)
     
 
@@ -154,7 +157,7 @@ def load_tokenizer():
 def load_and_preprocess_data():
     rn.seed(42)
 
-    tr = data_viewer.load_article_set('data/train', '../doccano/labels')
+    tr = data_viewer.load_article_set('data/train', 'data/train_polarization_token_labels')
     tr = {art.id: art for art in tr}
     # for each article, split into sentences with active patterns and sentences without
     patterns = {}   # tuple(art, sent_range): [label]
@@ -587,6 +590,5 @@ def interactive_predict(s):
     print()
 
 if __name__ == '__main__':
-    load_objects()
-    # train()
+    load_objects(exclude_data=True)
     interactive_predict('I got hit by a car today.')

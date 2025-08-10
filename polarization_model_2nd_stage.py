@@ -7,7 +7,7 @@ nlp = spacy.load('en_core_web_sm')
 
 from polarization_model_1st_stage import load_objects, sentence_predict
 from data_viewer import load_article_set
-from demo_polarization_first_stage import example1, example2, example3
+from demo_polarization_examples import example1, example2, example3
 import util as ut
 
 
@@ -156,17 +156,15 @@ def predict(text):
     return {q: rule_map[q].eval(realization) for q in rule_map}
 
 def evaluate_train_set():
-    tr = load_article_set('data/train', '../doccano/labels')
+    tr = load_article_set('data/train', 'data/train_polarization_token_labels')
     tr = {art.id: art for art in tr}
     
-    with open('../doccano/visited.json', 'r') as file:
-        visited = json.load(file)
-        tr_validated = {art_id for art_id in visited if visited[art_id] == 'ok'}
+    article_wise_answers = read_csv('data/polarization_article_labels/FormAnswers.csv')
 
     answers = {}
 
     for answer in article_wise_answers.rows():
-        if answer['article_id'] not in tr_validated:
+        if answer['article_id'] not in tr:
             continue
         if answer['article_id'] in tr and answer['question_id'] in considered_questions:
             key = answer['article_id'], answer['question_id']
@@ -174,7 +172,7 @@ def evaluate_train_set():
                 print(f'Warning, question {key[1]} for article {key[0]} answered multiple times.')
             answers[key] = int(answer['answer'])
 
-    for art_id in tr_validated:
+    for art_id in tr:
         for q_id in considered_questions:
             if (art_id, q_id) in answers:
                 continue
@@ -188,7 +186,7 @@ def evaluate_train_set():
     
     q_label_counts = {q_id: {i: 0 for i in range(1, 6)} for q_id in considered_questions}
     
-    for i, art_id in enumerate(tr_validated):
+    for i, art_id in enumerate(tr):
         print(i)
         art = tr[art_id]
         pred = predict(art.text)
@@ -208,7 +206,7 @@ def evaluate_test_set():
     text_set = load_article_set('data/dev') + load_article_set('data/test')
     text_set = {art.id: art for art in text_set}
     
-    row_answers = read_csv('../experimental_analysis/Eval-FormAnswers_rows-v6.csv')
+    row_answers = read_csv('data/polarization_article_labels/Eval-FormAnswers.csv')
     
     eval_arts = set(row_answers['article_id'])
     
@@ -242,10 +240,6 @@ def evaluate_test_set():
 
 
 if __name__ == '__main__':
-    article_wise_answers = read_csv('../experimental_analysis/FormAnswers_rows-v6.csv')
-    load_objects()
-    # res, counts = evaluate_train_set()
-    # res = evaluate_test_set()
-    # print(res)
+    load_objects(exclude_data=True)
 
     print(predict(example1))
